@@ -13,11 +13,14 @@ from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
 
 import requests
+from zoneinfo import ZoneInfo
 
 BASE = "https://api.hevyapp.com/v1"
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 WEEKS = 12
 TOP_LIFTS = 4
+# Workouts are dated in your local time zone, not UTC.
+TZ = ZoneInfo(os.environ.get("HEVY_TZ", "Australia/Melbourne"))
 
 
 def load_key():
@@ -75,7 +78,7 @@ def week_start(d):
 
 def summarize(workouts):
     workouts = sorted(workouts, key=lambda w: w["start_time"])
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(TZ).date()
     this_week = week_start(today)
 
     weekly = defaultdict(lambda: {"workouts": 0, "volume_kg": 0.0})
@@ -83,7 +86,7 @@ def summarize(workouts):
     lift_best = defaultdict(dict)  # name -> {date: (e1rm, label)}
 
     for w in workouts:
-        d = parse_time(w["start_time"]).date()
+        d = parse_time(w["start_time"]).astimezone(TZ).date()
         wk = weekly[week_start(d)]
         wk["workouts"] += 1
         for ex in w.get("exercises", []):
@@ -145,7 +148,7 @@ def summarize(workouts):
         sets = [s for ex in w.get("exercises", []) for s in working_sets(ex)]
         recent.append({
             "title": w.get("title") or "Workout",
-            "date": start.date().isoformat(),
+            "date": start.astimezone(TZ).date().isoformat(),
             "duration_min": round((end - start).total_seconds() / 60),
             "exercises": len(w.get("exercises", [])),
             "sets": len(sets),
@@ -252,8 +255,10 @@ def session_view(workouts, routines, folders):
     folder_id = routine.get("folder_id")
     phase = re.match(r"\s*(Wk\s*[\d\-–]+)", routine["title"])
     phase = phase.group(1) if phase else None
-    pool = [r for r in routines if r.get("folder_id") == folder_id
-            and (not phase or r["title"].strip().startswith(phase))]
+    # Match phase routines by name prefix ("Wk1-3 ..."), since a routine can
+    # end up outside the program's folder in Hevy.
+    pool = [r for r in routines if r["title"].strip().startswith(phase)] if phase \
+        else [r for r in routines if r.get("folder_id") == folder_id]
     pool_ids = {r["id"] for r in pool}
 
     # Rotation = order the routines were first done in this phase.
