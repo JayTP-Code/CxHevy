@@ -7,6 +7,7 @@ dashboard's `gym/summary` document holds).
 """
 import json
 import os
+import re
 import sys
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
@@ -32,11 +33,11 @@ def load_key():
     raise SystemExit("HEVY_API_KEY not set (environment or .env)")
 
 
-def fetch_workouts(key):
-    workouts, page = [], 1
+def fetch_all(key, path, field):
+    items, page = [], 1
     while True:
         r = requests.get(
-            f"{BASE}/workouts",
+            f"{BASE}{path}",
             headers={"api-key": key},
             params={"page": page, "pageSize": 10},
         )
@@ -46,11 +47,11 @@ def fetch_workouts(key):
             break
         r.raise_for_status()
         body = r.json()
-        workouts.extend(body.get("workouts", []))
+        items.extend(body.get(field, []))
         if page >= body.get("page_count", 1):
             break
         page += 1
-    return workouts
+    return items
 
 
 def parse_time(s):
@@ -161,6 +162,171 @@ def summarize(workouts):
     }
 
 
+def est(weight, reps):
+    """Epley estimate without the rep cap, for comparing one exercise to itself."""
+    if not weight or not reps:
+        return 0.0
+    return weight if reps == 1 else weight * (1 + reps / 30)
+
+
+def set_label(s):
+    kg, reps, secs = s.get("weight_kg"), s.get("reps"), s.get("duration_seconds")
+    if secs and not reps:
+        t = f"{secs // 60}:{secs % 60:02d} min" if secs >= 120 else f"{secs} s"
+        return f"{round(kg, 1):g} kg · {t}" if kg else t
+    if kg and reps:
+        return f"{round(kg, 1):g} × {reps}"
+    if reps:
+        return f"BW × {reps}"
+    return "–"
+
+
+def top_set(sets):
+    best = max(sets, key=lambda s: (est(s.get("weight_kg"), s.get("reps")), s.get("duration_seconds") or 0), default=None)
+    return best, est(best.get("weight_kg"), best.get("reps")) if best else 0.0
+
+
+def increment(kg):
+    return 2.5 if kg >= 20 else 1
+
+
+def session_view(workouts, routines, folders):
+    """Detail for the dashboard's session card: the last workout as a recap,
+    and the next routine in the current program with targets."""
+    if not workouts:
+        return {}
+    workouts = sorted(workouts, key=lambda w: w["start_time"])
+    by_id = {r["id"]: r for r in routines}
+    folder_names = {f["id"]: f["title"].strip() for f in folders}
+
+    history = defaultdict(list)  # template id -> [(start_time, exercise)]
+    for w in workouts:
+        for ex in w.get("exercises", []):
+            history[ex["exercise_template_id"]].append((w["start_time"], ex))
+
+    def previous(tid, before):
+        return [ex for t, ex in history[tid] if t < before]
+
+    # ---- Recap of the most recent workout ----
+    last = workouts[-1]
+    start, end = parse_time(last["start_time"]), parse_time(last["end_time"])
+    rec_ex, prs = [], 0
+    for ex in last.get("exercises", []):
+        sets = working_sets(ex)
+        top, e = top_set(sets)
+        prev = previous(ex["exercise_template_id"], last["start_time"])
+        prev_e = top_set(working_sets(prev[-1]))[1] if prev else 0.0
+        best_before = max((top_set(working_sets(p))[1] for p in prev), default=0.0)
+        pr = bool(prev) and e > best_before + 0.05
+        prs += pr
+        rec_ex.append({
+            "name": ex["title"],
+            "sets": [set_label(s) for s in sets],
+            "top": set_label(top) if top else "–",
+            "e1rm": round(e, 1),
+            "delta": round(e - prev_e, 1) if prev and e and prev_e else None,
+            "pr": pr,
+        })
+    vol = sum((s.get("weight_kg") or 0) * (s.get("reps") or 0)
+              for ex in last.get("exercises", []) for s in working_sets(ex))
+    same = [w for w in workouts[:-1] if last.get("routine_id") and w.get("routine_id") == last["routine_id"]]
+    prev_vol = None
+    if same:
+        prev_vol = round(sum((s.get("weight_kg") or 0) * (s.get("reps") or 0)
+                             for ex in same[-1].get("exercises", []) for s in working_sets(ex)))
+    last_session = {
+        "title": last.get("title") or "Workout",
+        "start_time": last["start_time"],
+        "duration_min": round((end - start).total_seconds() / 60),
+        "sets": sum(len(working_sets(ex)) for ex in last.get("exercises", [])),
+        "volume_kg": round(vol),
+        "prev_volume_kg": prev_vol,
+        "prs": prs,
+        "exercises": rec_ex,
+    }
+
+    # ---- Next routine in the current program ----
+    routine = by_id.get(last.get("routine_id"))
+    if not routine:
+        return {"last_session": last_session}
+    folder_id = routine.get("folder_id")
+    phase = re.match(r"\s*(Wk\s*[\d\-–]+)", routine["title"])
+    phase = phase.group(1) if phase else None
+    pool = [r for r in routines if r.get("folder_id") == folder_id
+            and (not phase or r["title"].strip().startswith(phase))]
+    pool_ids = {r["id"] for r in pool}
+
+    # Rotation = order the routines were first done in this phase.
+    rotation = []
+    for w in workouts:
+        rid = w.get("routine_id")
+        if rid in pool_ids and rid not in rotation:
+            rotation.append(rid)
+    rotation += [r["id"] for r in pool if r["id"] not in rotation]
+    i = rotation.index(routine["id"]) if routine["id"] in rotation else -1
+    nxt = by_id[rotation[(i + 1) % len(rotation)]]
+
+    block_start = next((w["start_time"] for w in workouts
+                        if by_id.get(w.get("routine_id"), {}).get("folder_id") == folder_id), last["start_time"])
+    block_week = (datetime.now(timezone.utc) - parse_time(block_start)).days // 7 + 1
+    total = re.search(r"(\d+)\s*wk", folder_names.get(folder_id, ""), re.I)
+
+    plan = []
+    for ex in nxt.get("exercises", []):
+        planned = [s for s in ex.get("sets", []) if s.get("type") != "warmup"]
+        prev = history.get(ex["exercise_template_id"], [])
+        last_ex = prev[-1] if prev else None
+        last_sets = working_sets(last_ex[1]) if last_ex else []
+        best = max((top_set(working_sets(e))[1] for _, e in prev), default=0.0)
+
+        rr = next((s.get("rep_range") for s in planned if s.get("rep_range")), None) or {}
+        lo, hi = rr.get("start"), rr.get("end") or rr.get("start")
+        p_kg = next((s.get("weight_kg") for s in planned if s.get("weight_kg")), None)
+        p_secs = next((s.get("duration_seconds") for s in planned if s.get("duration_seconds")), None)
+        if p_secs:
+            planned_label = f"{len(planned)} × {p_secs} s"
+        else:
+            reps = f"{lo}–{hi}" if lo and hi and lo != hi else (str(lo) if lo else "?")
+            planned_label = f"{len(planned)} × {reps}" + (f" @ {round(p_kg, 1):g} kg" if p_kg else "")
+
+        target = None
+        if last_sets and hi:
+            l_kg = max((s.get("weight_kg") or 0) for s in last_sets)
+            top_sets = [s for s in last_sets if (s.get("weight_kg") or 0) == l_kg]
+            reps = [s.get("reps") or 0 for s in top_sets]
+            if l_kg and all(r >= hi for r in reps):
+                up = round(l_kg + increment(l_kg), 1)
+                if p_kg and p_kg > l_kg:
+                    up = p_kg
+                target = {"kind": "up", "text": f"Hit {hi} reps on every set last time. Go up to {up:g} kg."}
+            elif l_kg:
+                got = ", ".join(str(r) for r in reps)
+                target = {"kind": "reps", "text": f"Stay at {round(l_kg, 1):g} kg and get every set to {hi} reps (last time: {got})."}
+        elif not last_sets:
+            target = {"kind": "new", "text": "First time logging this one. Start at the planned weight."}
+
+        plan.append({
+            "name": ex["title"],
+            "planned": planned_label,
+            "last": {"date": last_ex[0], "sets": [set_label(s) for s in last_sets]} if last_ex else None,
+            "best_e1rm": round(best, 1) if best else None,
+            "target": target,
+            "notes": (ex.get("notes") or "").strip()[:160],
+        })
+
+    return {
+        "last_session": last_session,
+        "next_session": {
+            "title": nxt["title"].strip(),
+            "program": folder_names.get(folder_id),
+            "block_week": block_week,
+            "block_weeks": int(total.group(1)) if total else None,
+            "exercises": plan,
+        },
+    }
+
+
+
 def save(name, data):
     out_dir = os.path.join(ROOT, "data")
     os.makedirs(out_dir, exist_ok=True)
@@ -171,10 +337,16 @@ def save(name, data):
 
 
 def main():
-    workouts = fetch_workouts(load_key())
+    key = load_key()
+    workouts = fetch_all(key, "/workouts", "workouts")
+    routines = fetch_all(key, "/routines", "routines")
+    folders = fetch_all(key, "/routine_folders", "routine_folders")
     save("workouts_all.json", workouts)
-    path = save("gym_summary.json", summarize(workouts))
-    print(f"{len(workouts)} workouts -> {os.path.relpath(path, ROOT)}")
+    save("routines_all.json", routines)
+    summary = summarize(workouts)
+    summary.update(session_view(workouts, routines, folders))
+    path = save("gym_summary.json", summary)
+    print(f"{len(workouts)} workouts, {len(routines)} routines -> {os.path.relpath(path, ROOT)}")
 
 
 if __name__ == "__main__":

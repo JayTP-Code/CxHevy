@@ -139,6 +139,33 @@ tr:last-child td { border-bottom: 0; }
 
 .skeleton { color: var(--muted); font-size: 14px; }
 
+/* Session card */
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; padding: 2px; gap: 2px; }
+.seg button { border: 0; background: none; padding: 5px 10px; border-radius: 6px; font-size: 13px; color: var(--ink-2); cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--panel); font-weight: 600; }
+.sess-title { font-family: var(--font-display); font-size: 28px; font-weight: 600; line-height: 1.1; }
+.sess-sub { color: var(--ink-2); font-size: 13.5px; }
+.sess-stats { display: flex; flex-wrap: wrap; gap: 6px 22px; padding-block: 10px; border-block: 1px solid var(--line); }
+.sess-stats div { display: grid; }
+.sess-stats .v { font-family: var(--font-data); font-variant-numeric: tabular-nums; font-size: 16px; }
+.sess-stats .v small { color: var(--muted); font-size: 12px; margin-left: 4px; }
+ol.exs { list-style: none; margin: 0; padding: 0; display: grid; }
+ol.exs > li { display: grid; gap: 4px; padding: 10px 0; border-top: 1px solid var(--line); min-width: 0; }
+ol.exs > li:first-child { border-top: 0; }
+.ex-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.ex-name { font-weight: 600; }
+.ex-plan { font-family: var(--font-data); font-size: 12.5px; color: var(--ink-2); }
+.sets { display: flex; flex-wrap: wrap; gap: 4px; }
+.sets span { font-family: var(--font-data); font-size: 12px; padding: 1px 7px; border-radius: 5px; background: var(--accent-soft); color: var(--ink); }
+.sets .lbl { background: none; padding-left: 0; color: var(--muted); font-family: var(--font-body); }
+.target { font-size: 13.5px; display: flex; gap: 6px; align-items: baseline; }
+.target b { font-family: var(--font-data); font-weight: 500; font-size: 12px; padding: 0 6px; border-radius: 5px; border: 1px solid currentColor; flex: none; }
+.target.up b { color: var(--good); }
+.target.reps b { color: var(--accent); }
+.target.new b { color: var(--muted); }
+.ex-note { color: var(--muted); font-size: 12.5px; }
+.chip.pr { color: var(--warn); font-weight: 500; }
+
 @media (max-width: 860px) {
   .cols { grid-template-columns: minmax(0, 1fr); }
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -194,6 +221,16 @@ tr:last-child td { border-bottom: 0; }
     </div>
 
     <div class="col">
+      <section class="panel" aria-labelledby="sess-h" id="sess-panel" hidden>
+        <div class="panel-head"><h2 id="sess-h">Up next</h2>
+          <div class="seg" role="group" aria-label="Session view">
+            <button type="button" id="seg-next" aria-pressed="true">Up next</button>
+            <button type="button" id="seg-last" aria-pressed="false">Last session</button>
+          </div>
+        </div>
+        <div id="sess-body"></div>
+      </section>
+
       <section class="panel" aria-labelledby="gym-h">
         <div class="panel-head"><h2 id="gym-h">Training</h2><span class="meta" id="gym-meta">Hevy</span></div>
         <div id="gym-empty">
@@ -541,7 +578,68 @@ tr:last-child td { border-bottom: 0; }
     });
   }
 
+  // ---------- Session card (next routine / recap) ----------
+  let sessView = null; // "next" | "last"; null until data decides the default
+  let sessData = null;
+  const setsHtml = (arr, lbl) => `<div class="sets">${lbl ? `<span class="lbl">${esc(lbl)}</span>` : ""}${arr.map((x) => `<span>${esc(x)}</span>`).join("")}</div>`;
+  const TARGET_TAG = { up: "↑ kg", reps: "+ reps", new: "new" };
+
+  function renderSession() {
+    const g = sessData;
+    const last = g?.last_session, next = g?.next_session;
+    $("sess-panel").hidden = !last && !next;
+    if (!last && !next) return;
+    const trainedToday = last && dayKey(new Date(last.start_time)) === dayKey(new Date());
+    if (!sessView) sessView = trainedToday || !next ? "last" : "next";
+    if (sessView === "next" && !next) sessView = "last";
+    if (sessView === "last" && !last) sessView = "next";
+    $("seg-next").hidden = !next; $("seg-last").hidden = !last;
+    $("seg-last").textContent = trainedToday ? "Today" : "Last session";
+    $("seg-next").setAttribute("aria-pressed", sessView === "next");
+    $("seg-last").setAttribute("aria-pressed", sessView === "last");
+
+    if (sessView === "next") {
+      $("sess-h").textContent = "Up next";
+      const wk = next.block_week && next.block_weeks ? ` · week ${Math.min(next.block_week, next.block_weeks)} of ${next.block_weeks}` : "";
+      $("sess-body").innerHTML = `
+        <div class="sess-title">${esc(next.title)}</div>
+        <div class="sess-sub">${esc(next.program || "Hevy routine")}${esc(wk)} · ${next.exercises.length} exercises</div>
+        <ol class="exs">${next.exercises.map((e) => `<li>
+          <div class="ex-head"><span class="ex-name">${esc(e.name)}</span><span class="ex-plan">${esc(e.planned)}</span></div>
+          ${e.last ? setsHtml(e.last.sets, `Last (${fmtDM.format(new Date(e.last.date))}):`) : ""}
+          ${e.target ? `<div class="target ${esc(e.target.kind)}"><b>${TARGET_TAG[e.target.kind] || ""}</b><span>${esc(e.target.text)}</span></div>` : ""}
+          ${e.notes ? `<div class="ex-note">${esc(e.notes)}</div>` : ""}
+        </li>`).join("")}</ol>`;
+    } else {
+      const d = new Date(last.start_time);
+      $("sess-h").textContent = trainedToday ? "Today's session" : "Last session";
+      const volDiff = last.prev_volume_kg ? last.volume_kg - last.prev_volume_kg : null;
+      $("sess-body").innerHTML = `
+        <div class="sess-title">${esc(last.title)}</div>
+        <div class="sess-sub">${esc(trainedToday ? "Today" : fmtShort.format(d))}, ${esc(fmtTime.format(d))}</div>
+        <div class="sess-stats">
+          <div><span class="label">Time</span><span class="v">${last.duration_min}<small>min</small></span></div>
+          <div><span class="label">Sets</span><span class="v">${last.sets}</span></div>
+          <div><span class="label">Volume</span><span class="v">${kg(last.volume_kg)}<small>kg${volDiff !== null ? ` (${volDiff >= 0 ? "+" : "−"}${kg(Math.abs(volDiff))} vs last time)` : ""}</small></span></div>
+          <div><span class="label">PRs</span><span class="v">${last.prs}</span></div>
+        </div>
+        <ol class="exs">${last.exercises.map((e) => {
+          let chip = "";
+          if (e.pr) chip = `<span class="chip pr">PR · ${e.e1rm} kg est.</span>`;
+          else if (e.delta !== null && e.delta !== undefined) {
+            const c = Math.abs(e.delta) < 0.5 ? "flat" : e.delta > 0 ? "up" : "down";
+            chip = `<span class="chip ${c}" title="Est. 1RM vs last time">${c === "flat" ? "±" : e.delta > 0 ? "+" : "−"}${Math.abs(e.delta).toFixed(1)} kg</span>`;
+          }
+          return `<li><div class="ex-head"><span class="ex-name">${esc(e.name)}</span>${chip}</div>${setsHtml(e.sets)}</li>`;
+        }).join("")}</ol>
+        ${next ? `<p class="note">Next up: <strong>${esc(next.title)}</strong></p>` : ""}`;
+    }
+  }
+  $("seg-next").addEventListener("click", () => { sessView = "next"; renderSession(); });
+  $("seg-last").addEventListener("click", () => { sessView = "last"; renderSession(); });
+
   function renderGym(g) {
+    sessData = g; renderSession();
     const has = g && Array.isArray(g.weeks) && g.weeks.length;
     $("gym").hidden = !has;
     $("gym-empty").hidden = !!has;
