@@ -206,7 +206,7 @@ ol.exs > li:first-child { border-top: 0; }
     <div class="stat"><span class="label">Open to-dos</span><span class="v num" id="s-open">–</span><span class="d" id="s-open-d">Add your first below</span></div>
     <div class="stat"><span class="label">Next up</span><span class="v text" id="s-next">–</span><span class="d" id="s-next-d">From Google Calendar</span></div>
     <div class="stat"><span class="label">Workouts this week</span><span class="v num" id="s-week">–</span><span class="d" id="s-week-d">From Hevy</span></div>
-    <div class="stat"><span class="label">Week streak</span><span class="v num" id="s-streak">–</span><span class="d" id="s-streak-d">Weeks in a row with a session</span></div>
+    <div class="stat"><span class="label">After that</span><span class="v text" id="s-then">–</span><span class="d" id="s-then-d">From Google Calendar</span></div>
   </div>
 
   <div class="cols">
@@ -436,15 +436,12 @@ ol.exs > li:first-child { border-top: 0; }
       }).join("");
     }
 
-    const next = items.find((it) => (it.allDay ? false : (it.end || it.at) > new Date()));
-    if (next) {
-      $("s-next").textContent = next.e.summary || next.e.title || "(No title)";
-      const k = dayKey(next.at);
-      $("s-next-d").textContent = `${k === todayK ? "Today" : k === tomorrowK ? "Tomorrow" : fmtShort.format(next.at)}, ${fmtTime.format(next.at)}`;
-    } else {
-      $("s-next").textContent = "Free";
-      $("s-next-d").textContent = "No timed events in the next 7 days";
-    }
+    const upcoming = items.filter((it) => !it.allDay && (it.end || it.at) > new Date());
+    const when = (it) => { const k = dayKey(it.at); return `${k === todayK ? "Today" : k === tomorrowK ? "Tomorrow" : fmtShort.format(it.at)}, ${fmtTime.format(it.at)}`; };
+    [["s-next", upcoming[0]], ["s-then", upcoming[1]]].forEach(([id, it], i) => {
+      $(id).textContent = it ? (it.e.summary || it.e.title || "(No title)") : i === 0 ? "Free" : "Nothing else";
+      $(id + "-d").textContent = it ? when(it) : "No more timed events in the next 7 days";
+    });
   }
 
   $("agenda").addEventListener("click", async (ev) => {
@@ -494,8 +491,7 @@ ol.exs > li:first-child { border-top: 0; }
         if (transient && events.length) { $("cal-meta").textContent = "Next 7 days · couldn't refresh"; return; }
         events = []; calLoaded = false;
         $("agenda").innerHTML = `<p class="note">${esc(calMessage(code))}</p>`;
-        $("s-next").textContent = "–";
-        $("s-next-d").textContent = "Calendar unavailable";
+        for (const id of ["s-next", "s-then"]) { $(id).textContent = "–"; $(id + "-d").textContent = "Calendar unavailable"; }
       }
     }, { refetchInterval: 5 * 60 * 1000 });
   }
@@ -674,15 +670,13 @@ ol.exs > li:first-child { border-top: 0; }
     $("gym-empty").hidden = !!has;
     if (!has) {
       $("s-week").textContent = "–"; $("s-week-d").textContent = "Waiting for first Hevy sync";
-      $("s-streak").textContent = "–";
       return;
     }
     const synced = g.synced_at ? new Date(g.synced_at) : null;
     $("gym-meta").textContent = synced ? `Hevy · synced ${fmtShort.format(synced)}, ${fmtTime.format(synced)}` : "Hevy";
     const thisWk = g.weeks[g.weeks.length - 1];
     $("s-week").textContent = thisWk.workouts;
-    $("s-week-d").textContent = `${kg(thisWk.volume_kg)} kg lifted · ${(g.total_workouts || 0).toLocaleString()} all time`;
-    $("s-streak").innerHTML = `${g.streak_weeks || 0}<small>wk</small>`;
+    $("s-week-d").textContent = `${kg(thisWk.volume_kg)} kg lifted · ${g.streak_weeks || 0}-week streak`;
     renderWeeks(g.weeks);
     if (g.lifts?.length) renderLifts(g.lifts); else $("lifts").innerHTML = `<p class="note">No weighted lifts logged in the last 6 months.</p>`;
     $("recent").innerHTML = (g.recent || []).map((w) => `<tr>
