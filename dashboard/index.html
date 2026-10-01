@@ -89,6 +89,19 @@ ul.todos .x { opacity: 0; border: 0; background: none; color: var(--muted); curs
 ul.todos li:hover .x, ul.todos .x:focus-visible { opacity: 1; }
 ul.todos .x:hover { color: var(--danger); background: var(--accent-soft); }
 @media (hover: none) { ul.todos .x { opacity: .6; } }
+.todo-groups { display: grid; gap: 16px; }
+.todo-group { display: grid; gap: 2px; }
+.todo-group-h { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 2px solid var(--ink); padding-bottom: 3px; }
+.todo-group-h h3 { font-size: 17px; text-transform: uppercase; letter-spacing: .06em; }
+.todo-group-h span { color: var(--muted); font-size: 12.5px; }
+.todo-group .none { color: var(--muted); font-size: 13.5px; padding: 8px 2px; margin: 0; }
+ul.todos li { grid-template-columns: auto minmax(0, 1fr) auto auto; }
+ul.todos .mv { opacity: 0; border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 12px; padding: 2px 6px; border-radius: 6px; white-space: nowrap; }
+ul.todos li:hover .mv, ul.todos .mv:focus-visible { opacity: 1; }
+ul.todos .mv:hover { color: var(--accent); background: var(--accent-soft); }
+@media (hover: none) { ul.todos .mv { opacity: .6; } }
+form.add .seg { flex: none; align-self: stretch; align-items: stretch; }
+@media (max-width: 520px) { form.add { flex-wrap: wrap; } form.add .seg { width: 100%; } form.add .seg button { flex: 1; } form.add input { flex-basis: 0; } }
 .todo-foot { display: flex; justify-content: space-between; align-items: center; color: var(--muted); font-size: 13px; }
 
 /* Agenda */
@@ -204,11 +217,18 @@ ol.exs > li:first-child { border-top: 0; }
       <section class="panel" aria-labelledby="todo-h">
         <div class="panel-head"><h2 id="todo-h">To-dos</h2><span class="meta" id="todo-meta"></span></div>
         <form class="add" id="add-form" autocomplete="off">
+          <div class="seg" role="group" aria-label="List">
+            <button type="button" id="cat-work" data-cat="work" aria-pressed="true">Work</button>
+            <button type="button" id="cat-life" data-cat="life" aria-pressed="false">Life</button>
+          </div>
           <label class="label" for="add-input" hidden>New to-do</label>
           <input id="add-input" maxlength="200" placeholder="Add a to-do and press Enter">
           <button class="btn" id="add-btn" type="submit">Add</button>
         </form>
-        <ul class="todos" id="todo-list"></ul>
+        <div class="todo-groups" id="todo-list">
+          <div class="todo-group"><div class="todo-group-h"><h3>Work</h3><span id="count-work"></span></div><ul class="todos" id="list-work"></ul></div>
+          <div class="todo-group"><div class="todo-group-h"><h3>Life</h3><span id="count-life"></span></div><ul class="todos" id="list-life"></ul></div>
+        </div>
         <p class="note" id="todo-empty">Nothing on the list. Type above to add your first to-do; it saves to this dashboard and shows up on every device.</p>
         <p class="err" id="todo-err" hidden></p>
         <div class="todo-foot" id="todo-foot" hidden><span id="done-count"></span><button class="btn ghost" id="clear-done" type="button">Clear completed</button></div>
@@ -286,22 +306,47 @@ ol.exs > li:first-child { border-top: 0; }
   let todos = [];
   let todosRef = null;
 
+  const catOf = (t) => (t.category === "work" ? "work" : "life");
+  let addCat = "work";
+  try { if (localStorage.getItem("todo-cat") === "life") addCat = "life"; } catch (e) {}
+  function renderCat() {
+    $("cat-work").setAttribute("aria-pressed", addCat === "work");
+    $("cat-life").setAttribute("aria-pressed", addCat === "life");
+    $("add-input").placeholder = `Add a ${addCat} to-do and press Enter`;
+  }
+  for (const id of ["cat-work", "cat-life"]) {
+    $(id).addEventListener("click", (ev) => {
+      addCat = ev.currentTarget.dataset.cat;
+      try { localStorage.setItem("todo-cat", addCat); } catch (e) {}
+      renderCat(); $("add-input").focus();
+    });
+  }
+
   function renderTodos() {
     const open = todos.filter((t) => !t.done).sort((a, b) => a.created - b.created);
     const done = todos.filter((t) => t.done).sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0));
     const list = [...open, ...done];
-    $("todo-list").innerHTML = list.map((t) => `
-      <li class="${t.done ? "done" : ""}" data-id="${esc(t.id)}">
-        <input type="checkbox" id="cb-${esc(t.id)}" ${t.done ? "checked" : ""} aria-label="Mark done">
-        <label class="t" for="cb-${esc(t.id)}">${esc(t.text)}</label>
-        <button class="x" type="button" aria-label="Delete">×</button>
-      </li>`).join("");
+    for (const cat of ["work", "life"]) {
+      const items = list.filter((t) => catOf(t) === cat);
+      const other = cat === "work" ? "Life" : "Work";
+      $("list-" + cat).innerHTML = items.length ? items.map((t) => `
+        <li class="${t.done ? "done" : ""}" data-id="${esc(t.id)}">
+          <input type="checkbox" id="cb-${esc(t.id)}" ${t.done ? "checked" : ""} aria-label="Mark done">
+          <label class="t" for="cb-${esc(t.id)}">${esc(t.text)}</label>
+          <button class="mv" type="button" data-to="${other.toLowerCase()}" title="Move to ${other}">→ ${other}</button>
+          <button class="x" type="button" aria-label="Delete">×</button>
+        </li>`).join("") : `<li class="none" style="display:block;border:0"><p class="none">Nothing here.</p></li>`;
+      const n = items.filter((t) => !t.done).length;
+      $("count-" + cat).textContent = items.length ? `${n} open` : "";
+    }
+    $("todo-list").hidden = list.length === 0;
     $("todo-empty").hidden = list.length > 0;
     $("todo-foot").hidden = done.length === 0;
     $("done-count").textContent = `${done.length} completed`;
     $("todo-meta").textContent = list.length ? `${open.length} open` : "";
     $("s-open").textContent = open.length;
-    $("s-open-d").textContent = open.length ? `Oldest: ${open[0].text}` : list.length ? "All clear" : "Add your first below";
+    const ow = open.filter((t) => catOf(t) === "work").length;
+    $("s-open-d").textContent = open.length ? `${ow} work · ${open.length - ow} life` : list.length ? "All clear" : "Add your first below";
   }
 
   function showTodoErr(e) {
@@ -328,7 +373,7 @@ ol.exs > li:first-child { border-top: 0; }
     const text = input.value.trim();
     if (!text || !todosRef) return;
     input.value = "";
-    try { await todosRef.add({ text, done: false, created: Date.now() }); showTodoErr(null); }
+    try { await todosRef.add({ text, category: addCat, done: false, created: Date.now() }); showTodoErr(null); }
     catch (e) { input.value = text; showTodoErr(e); }
   });
 
@@ -341,6 +386,12 @@ ol.exs > li:first-child { border-top: 0; }
   });
 
   $("todo-list").addEventListener("click", async (ev) => {
+    const mv = ev.target.closest(".mv");
+    if (mv && todosRef) {
+      try { await todosRef.doc(mv.closest("li").dataset.id).update({ category: mv.dataset.to }); showTodoErr(null); }
+      catch (e) { showTodoErr(e); }
+      return;
+    }
     const btn = ev.target.closest(".x");
     if (!btn || !todosRef) return;
     try { await todosRef.doc(btn.closest("li").dataset.id).delete(); showTodoErr(null); }
@@ -422,7 +473,7 @@ ol.exs > li:first-child { border-top: 0; }
     const btn = ev.target.closest("[data-todo]");
     if (!btn || !todosRef) return;
     btn.disabled = true;
-    try { await todosRef.add({ text: btn.dataset.todo, done: false, created: Date.now() }); btn.textContent = "Added"; showTodoErr(null); }
+    try { await todosRef.add({ text: btn.dataset.todo, category: addCat, done: false, created: Date.now() }); btn.textContent = `Added to ${addCat === "work" ? "Work" : "Life"}`; showTodoErr(null); }
     catch (e) { btn.disabled = false; showTodoErr(e); }
   });
 
@@ -662,6 +713,7 @@ ol.exs > li:first-child { border-top: 0; }
   }
 
   // ---------- Boot ----------
+  renderCat();
   renderTodos();
   renderGym(null);
 
