@@ -15,3 +15,10 @@ Live page: https://claude.ai/artifact/Nn4VJTCBrP2UoD9xVuLEXy (private to you)
    which writes `data/gym_summary.json`, then loads that file into the page's `gym/summary` document.
 
 `data/` and `.env` are git-ignored, so your workout data and key stay out of the repo.
+
+## Daily sync
+
+A Claude routine ("Daily Hevy dashboard sync") runs every day at 22:27 UTC, about
+an hour after you usually finish training. It runs `scripts/hevy_sync.py` in a fresh cloud
+session and loads the result into the dashboard. It needs `HEVY_API_KEY` set as an
+environment secret and `api.hevyapp.com` allowed in the environment's network access.
