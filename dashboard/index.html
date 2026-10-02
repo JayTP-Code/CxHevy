@@ -94,6 +94,12 @@ ul.todos li:hover .acts, ul.todos .acts:focus-within { opacity: 1; }
 ul.todos .acts button { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 14px; line-height: 1; width: 26px; height: 24px; border-radius: 6px; }
 ul.todos .acts button:hover { background: var(--accent-soft); color: var(--accent); }
 ul.todos .acts .x:hover { color: var(--danger); }
+.tabs { display: flex; gap: 18px; }
+.tabs button { border: 0; background: none; padding: 0 0 2px; font-family: var(--font-display); font-size: 24px; font-weight: 600; text-transform: uppercase; letter-spacing: .01em; color: var(--muted); cursor: pointer; border-bottom: 3px solid transparent; }
+.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+.tabs button:hover { color: var(--ink); }
+.tabs .n { font-family: var(--font-data); font-size: 12px; font-weight: 400; color: var(--muted); margin-left: 4px; vertical-align: super; }
+.tab-pane { display: grid; gap: 14px; }
 .todo-groups { display: grid; gap: 18px; }
 .todo-group { display: grid; gap: 2px; }
 .todo-group-h { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 2px solid var(--ink); padding-bottom: 3px; }
@@ -212,7 +218,15 @@ ol.exs > li:first-child { border-top: 0; }
   <div class="cols">
     <div class="col">
       <section class="panel" aria-labelledby="todo-h">
-        <div class="panel-head"><h2 id="todo-h">To-dos</h2><span class="meta" id="todo-meta"></span></div>
+        <div class="panel-head">
+          <h2 id="todo-h" hidden>Lists</h2>
+          <div class="tabs" role="tablist" aria-labelledby="todo-h">
+            <button type="button" role="tab" id="tab-todos" aria-controls="pane-todos" aria-selected="true">To-dos</button>
+            <button type="button" role="tab" id="tab-shop" aria-controls="pane-shop" aria-selected="false">Shopping<span class="n" id="shop-n"></span></button>
+          </div>
+          <span class="meta" id="todo-meta"></span>
+        </div>
+        <div class="tab-pane" id="pane-todos" role="tabpanel" aria-labelledby="tab-todos">
         <div class="todo-groups" id="todo-list">
           <div class="todo-group"><div class="todo-group-h"><h3>Work</h3><span id="count-work"></span></div><ul class="todos" id="list-work"></ul>
             <form class="add" data-cat="work" autocomplete="off"><input id="add-work" maxlength="200" aria-label="New work to-do" placeholder="+ Add a work to-do"><button class="btn" type="submit" hidden>Add</button></form></div>
@@ -222,6 +236,14 @@ ol.exs > li:first-child { border-top: 0; }
         <p class="note" id="todo-empty">Type in Work or Life above to add your first to-do. It saves to this dashboard and shows up on every device.</p>
         <p class="err" id="todo-err" hidden></p>
         <div class="todo-foot" id="todo-foot" hidden><span id="done-count"></span><button class="btn ghost" id="clear-done" type="button">Clear completed</button></div>
+        </div>
+        <div class="tab-pane" id="pane-shop" role="tabpanel" aria-labelledby="tab-shop" hidden>
+          <form class="add" id="shop-form" autocomplete="off"><input id="add-shop" maxlength="120" aria-label="New shopping item" placeholder="+ Add an item and press Enter"><button class="btn" type="submit" hidden>Add</button></form>
+          <ul class="todos" id="shop-list"></ul>
+          <p class="note" id="shop-empty">Your shopping list is empty. Add items above, then tick them off in the shop.</p>
+          <p class="err" id="shop-err" hidden></p>
+          <div class="todo-foot" id="shop-foot" hidden><span id="shop-count"></span><button class="btn ghost" id="clear-shop" type="button">Clear ticked</button></div>
+        </div>
       </section>
 
       <section class="panel" aria-labelledby="cal-h">
@@ -380,6 +402,82 @@ ol.exs > li:first-child { border-top: 0; }
     if (!todosRef) return;
     for (const t of todos.filter((t) => t.done)) {
       try { await todosRef.doc(t.id).delete(); } catch (e) { showTodoErr(e); break; }
+    }
+  });
+
+  // ---------- Tabs: To-dos / Shopping ----------
+  function showTab(name) {
+    const shop = name === "shopping";
+    $("tab-todos").setAttribute("aria-selected", !shop);
+    $("tab-shop").setAttribute("aria-selected", shop);
+    $("pane-todos").hidden = shop;
+    $("pane-shop").hidden = !shop;
+    $("todo-meta").hidden = shop;
+    try { localStorage.setItem("list-tab", name); } catch (e) {}
+  }
+  $("tab-todos").addEventListener("click", () => showTab("todos"));
+  $("tab-shop").addEventListener("click", () => showTab("shopping"));
+  {
+    let start = location.hash === "#shopping" ? "shopping" : "todos";
+    try { if (location.hash !== "#todos" && localStorage.getItem("list-tab") === "shopping") start = "shopping"; } catch (e) {}
+    showTab(start);
+  }
+
+  // ---------- Shopping (db: shopping/*) ----------
+  let shopItems = [];
+  let shopRef = null;
+  $("add-shop").disabled = true;
+
+  function renderShop() {
+    const need = shopItems.filter((t) => !t.done).sort((a, b) => a.created - b.created);
+    const got = shopItems.filter((t) => t.done).sort((a, b) => (a.doneAt || 0) - (b.doneAt || 0));
+    $("shop-list").innerHTML = [...need, ...got].map((t) => `
+      <li class="${t.done ? "done" : ""}" data-id="${esc(t.id)}">
+        <input type="checkbox" id="sh-${esc(t.id)}" ${t.done ? "checked" : ""} aria-label="Got it">
+        <label class="t" for="sh-${esc(t.id)}">${esc(t.text)}</label>
+        <span class="acts"><button class="x" type="button" title="Remove" aria-label="Remove">×</button></span>
+      </li>`).join("");
+    $("shop-empty").hidden = shopItems.length > 0;
+    $("shop-foot").hidden = got.length === 0;
+    $("shop-count").textContent = `${got.length} in the trolley`;
+    $("shop-n").textContent = need.length ? need.length : "";
+  }
+
+  function showShopErr(e) {
+    const el = $("shop-err");
+    if (!e) { el.hidden = true; return; }
+    el.hidden = false;
+    el.textContent = e.code === "invalid_argument" ? "You can view this list but not change it."
+      : e.code === "quota_exceeded" ? "The list is full. Clear ticked items to make room."
+      : "That change didn't save. Check your connection and try again.";
+  }
+
+  $("shop-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const input = $("add-shop");
+    const text = input.value.trim();
+    if (!text || !shopRef) return;
+    input.value = "";
+    try { await shopRef.add({ text, done: false, created: Date.now() }); showShopErr(null); }
+    catch (e) { input.value = text; showShopErr(e); }
+  });
+  $("shop-list").addEventListener("change", async (ev) => {
+    const li = ev.target.closest("li");
+    if (!li || !shopRef || ev.target.type !== "checkbox") return;
+    const done = ev.target.checked;
+    try { await shopRef.doc(li.dataset.id).update(done ? { done, doneAt: Date.now() } : { done, doneAt: null }); showShopErr(null); }
+    catch (e) { ev.target.checked = !done; showShopErr(e); }
+  });
+  $("shop-list").addEventListener("click", async (ev) => {
+    const btn = ev.target.closest(".x");
+    if (!btn || !shopRef) return;
+    try { await shopRef.doc(btn.closest("li").dataset.id).delete(); showShopErr(null); }
+    catch (e) { showShopErr(e); }
+  });
+  $("clear-shop").addEventListener("click", async () => {
+    if (!shopRef) return;
+    for (const t of shopItems.filter((t) => t.done)) {
+      try { await shopRef.doc(t.id).delete(); } catch (e) { showShopErr(e); break; }
     }
   });
 
@@ -686,6 +784,7 @@ ol.exs > li:first-child { border-top: 0; }
 
   // ---------- Boot ----------
   renderTodos();
+  renderShop();
   renderGym(null);
 
   const use = (name) => (window.claude?.use ? window.claude.use(name) : Promise.resolve(null));
@@ -695,6 +794,12 @@ ol.exs > li:first-child { border-top: 0; }
       $("gym-empty").innerHTML = `<p class="note">Sign in to claude.ai to see your training data.</p>`;
       return;
     }
+    shopRef = db.collection("shopping");
+    $("add-shop").disabled = false;
+    shopRef.onSnapshot((snap) => {
+      shopItems = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      renderShop();
+    }, (e) => { showShopErr(e); $("add-shop").disabled = true; });
     todosRef = db.collection("todos");
     setTodoControls(true);
     renderCalendar();
