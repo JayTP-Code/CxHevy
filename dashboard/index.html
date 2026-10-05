@@ -748,7 +748,11 @@ ol.exs > li:first-child { border-top: 0; }
         </div>
         <ol class="exs">${last.exercises.map((e) => {
           let chip = "";
-          if (e.pr) chip = `<span class="chip pr">PR · ${e.e1rm} kg est.</span>`;
+          if (e.pr) chip = `<span class="chip pr">${e.e1rm == null ? "PR · least assistance yet" : `PR · ${e.e1rm} kg est.`}</span>`;
+          else if (e.delta_text) {
+            const c = Math.abs(e.delta) < 0.5 ? "flat" : e.delta > 0 ? "up" : "down";
+            chip = `<span class="chip ${c}" title="Assistance vs last time (less is better)">${esc(e.delta_text)}</span>`;
+          }
           else if (e.delta !== null && e.delta !== undefined) {
             const c = Math.abs(e.delta) < 0.5 ? "flat" : e.delta > 0 ? "up" : "down";
             chip = `<span class="chip ${c}" title="Est. 1RM vs last time">${c === "flat" ? "±" : e.delta > 0 ? "+" : "−"}${Math.abs(e.delta).toFixed(1)} kg</span>`;
