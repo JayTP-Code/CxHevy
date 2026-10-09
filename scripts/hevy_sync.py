@@ -285,27 +285,73 @@ def session_view(workouts, routines, folders):
     if not routine:
         return {"last_session": last_session}
     folder_id = routine.get("folder_id")
-    phase = re.match(r"\s*(Wk\s*[\d\-–]+)", routine["title"])
-    phase = phase.group(1) if phase else None
-    # Match phase routines by name prefix ("Wk1-3 ..."), since a routine can
-    # end up outside the program's folder in Hevy.
-    pool = [r for r in routines if r["title"].strip().startswith(phase)] if phase \
-        else [r for r in routines if r.get("folder_id") == folder_id]
-    pool_ids = {r["id"] for r in pool}
 
-    # Rotation = order the routines were first done in this phase.
-    rotation = []
-    for w in workouts:
-        rid = w.get("routine_id")
-        if rid in pool_ids and rid not in rotation:
-            rotation.append(rid)
-    rotation += [r["id"] for r in pool if r["id"] not in rotation]
-    i = rotation.index(routine["id"]) if routine["id"] in rotation else -1
-    nxt = by_id[rotation[(i + 1) % len(rotation)]]
+    def phase_of(title):
+        m = re.match(r"\s*(Wk\s*[\d\-–]+)", title)
+        return m.group(1) if m else None
 
+    def phase_weeks(title):
+        # "Wk1-3 ..." covers weeks 1 to 3; "Wk4-8 Deload ..." means weeks 4 and 8.
+        m = re.match(r"\s*Wk\s*(\d+)\s*[-–]\s*(\d+)", title)
+        if not m:
+            return set()
+        a, b = int(m.group(1)), int(m.group(2))
+        return {a, b} if "deload" in title.lower() else set(range(a, b + 1))
+
+    # Block week counts calendar weeks (Mon-Sun) from the first workout in the program.
     block_start = next((w["start_time"] for w in workouts
                         if by_id.get(w.get("routine_id"), {}).get("folder_id") == folder_id), last["start_time"])
-    block_week = (datetime.now(timezone.utc) - parse_time(block_start)).days // 7 + 1
+    start_day = parse_time(block_start).astimezone(TZ).date()
+    block_week = (week_start(datetime.now(TZ).date()) - week_start(start_day)).days // 7 + 1
+
+    last_phase = phase_of(routine["title"])
+    phase = last_phase
+    if last_phase:
+        phases = {}
+        for r in routines:
+            ph = phase_of(r["title"])
+            if ph:
+                phases.setdefault(ph, set()).update(phase_weeks(r["title"]))
+        due = [ph for ph, wks in phases.items() if block_week in wks]
+        if due and last_phase not in due:
+            phase = due[0]
+
+    def pool_for(ph):
+        # Match phase routines by name prefix ("Wk1-3 ..."), since a routine can
+        # end up outside the program's folder in Hevy.
+        if ph:
+            return [r for r in routines if r["title"].strip().startswith(ph)]
+        return [r for r in routines if r.get("folder_id") == folder_id]
+
+    def rotation_for(pool):
+        # Rotation = order the routines were first done in this phase.
+        ids = {r["id"] for r in pool}
+        rot = []
+        for w in workouts:
+            rid = w.get("routine_id")
+            if rid in ids and rid not in rot:
+                rot.append(rid)
+        return rot + [r["id"] for r in pool if r["id"] not in rot]
+
+    if phase == last_phase:
+        rotation = rotation_for(pool_for(phase))
+        i = rotation.index(routine["id"]) if routine["id"] in rotation else -1
+        nxt = by_id[rotation[(i + 1) % len(rotation)]]
+    else:
+        # New phase: start with whichever of push/pull/legs led the last phase's rotation.
+        def rest(title, ph):
+            return title.strip()[len(ph):].strip().lower() if ph else title.lower()
+        prev_titles = [rest(by_id[rid]["title"], last_phase) for rid in rotation_for(pool_for(last_phase))]
+        def lead(r):
+            t = rest(r["title"], phase)
+            if t in prev_titles:
+                return (prev_titles.index(t), t)
+            kind = next((k for k in ("pull", "push", "leg") if k in t), None)
+            return (next((i for i, p in enumerate(prev_titles) if kind and kind in p), 99), t)
+        pool = sorted(pool_for(phase), key=lead)
+        nxt = by_id[rotation_for(pool)[0]] if any(
+            w.get("routine_id") in {r["id"] for r in pool} for w in workouts) else pool[0]
+
     total = re.search(r"(\d+)\s*wk", folder_names.get(folder_id, ""), re.I)
 
     plan = []
