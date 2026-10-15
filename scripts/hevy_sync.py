@@ -313,7 +313,10 @@ def session_view(workouts, routines, folders):
             if ph:
                 phases.setdefault(ph, set()).update(phase_weeks(r["title"]))
         due = [ph for ph, wks in phases.items() if block_week in wks]
-        if due and last_phase not in due:
+        # If you've already moved on to a later phase (e.g. skipped a deload),
+        # keep following it rather than going back to the scheduled one.
+        ahead = min(phases.get(last_phase) or {0}) > block_week
+        if due and last_phase not in due and not ahead:
             phase = due[0]
 
     def pool_for(ph):
@@ -323,15 +326,42 @@ def session_view(workouts, routines, folders):
             return [r for r in routines if r["title"].strip().startswith(ph)]
         return [r for r in routines if r.get("folder_id") == folder_id]
 
-    def rotation_for(pool):
-        # Rotation = order the routines were first done in this phase.
+    def suffix(title):
+        ph = phase_of(title)
+        return (title.strip()[len(ph):] if ph else title).strip().lower()
+
+    def first_done(pool):
         ids = {r["id"] for r in pool}
         rot = []
         for w in workouts:
             rid = w.get("routine_id")
             if rid in ids and rid not in rot:
                 rot.append(rid)
-        return rot + [r["id"] for r in pool if r["id"] not in rot]
+        return rot
+
+    def rotation_for(pool):
+        # Rotation = order the routines were first done in this phase. Routines not
+        # done yet follow the order of the most recent other phase with the same
+        # routine names (e.g. Wk5-7 follows the Wk1-3 order).
+        rot = first_done(pool)
+        rest = [r for r in pool if r["id"] not in rot]
+        names = {suffix(r["title"]) for r in pool}
+        ref = []
+        for w in reversed(workouts):
+            other = by_id.get(w.get("routine_id"))
+            if other and other["id"] not in {r["id"] for r in pool} and suffix(other["title"]) in names:
+                ph = phase_of(other["title"])
+                ref = [suffix(by_id[i]["title"]) for i in first_done(pool_for(ph))]
+                break
+        if rest and ref:
+            anchor = suffix(by_id[rot[-1]]["title"]) if rot else None
+            def key(r):
+                n = suffix(r["title"])
+                if n not in ref:
+                    return 99
+                return (ref.index(n) - ref.index(anchor) - 1) % len(ref) if anchor in ref else ref.index(n)
+            rest.sort(key=key)
+        return rot + [r["id"] for r in rest]
 
     if phase == last_phase:
         rotation = rotation_for(pool_for(phase))
