@@ -155,6 +155,22 @@ tr:last-child td { border-bottom: 0; }
 
 .skeleton { color: var(--muted); font-size: 14px; }
 
+/* Stocks */
+.stocks { display: grid; grid-template-columns: minmax(0, 1fr); }
+.stk { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; padding: 12px 0; border-top: 1px solid var(--line); min-width: 0; }
+.stk:first-child { border-top: 0; padding-top: 0; }
+.stk-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.stk-id { min-width: 0; flex: 1 1 auto; }
+.stk-sym { font-family: var(--font-display); font-size: 22px; font-weight: 600; letter-spacing: .02em; }
+.stk-name { display: block; color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stk-px { text-align: right; flex: none; display: grid; justify-items: end; gap: 2px; }
+.stk-px .num { font-size: 16px; }
+.stk-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12.5px; color: var(--ink-2); }
+.stk-meta b { font-family: var(--font-data); font-weight: 500; }
+.stk-meta .up { color: var(--good); }
+.stk-meta .down { color: var(--danger); }
+.fine { color: var(--muted); font-size: 12px; margin: 0; }
+
 /* Session card */
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; padding: 2px; gap: 2px; }
 .seg button { border: 0; background: none; padding: 5px 10px; border-radius: 6px; font-size: 13px; color: var(--ink-2); cursor: pointer; }
@@ -249,6 +265,13 @@ ol.exs > li:first-child { border-top: 0; }
       <section class="panel" aria-labelledby="cal-h">
         <div class="panel-head"><h2 id="cal-h">Calendar</h2><span class="meta" id="cal-meta">Next 7 days</span></div>
         <div class="agenda" id="agenda"><p class="skeleton">Loading your Google Calendar. You may be asked to allow access the first time.</p></div>
+      </section>
+
+      <section class="panel" aria-labelledby="stk-h">
+        <div class="panel-head"><h2 id="stk-h">Stocks</h2><span class="meta" id="stk-meta">Delayed prices</span></div>
+        <p class="note" id="stocks-empty">Your watchlist (IREN, ALOY, URG and VGS) appears here after the next daily sync.</p>
+        <div class="stocks" id="stocks"></div>
+        <p class="fine">Prices from Yahoo Finance, delayed. Analyst targets are other people's 12-month opinions, not a forecast. Not financial advice.</p>
       </section>
     </div>
 
@@ -644,11 +667,67 @@ ol.exs > li:first-child { border-top: 0; }
     svgEl.addEventListener("pointerleave", hideTip);
   }
 
-  function sparkline(hist, idx) {
-    const W = 240, H = 64, pad = 5;
+  // ---------- Stocks (db: stocks/summary) ----------
+  const pct = (v) => v == null ? "–" : `${v > 0 ? "+" : v < 0 ? "−" : "±"}${Math.abs(v).toFixed(Math.abs(v) >= 10 ? 0 : 1)}%`;
+  const dir = (v) => v == null || Math.abs(v) < 0.05 ? "flat" : v > 0 ? "up" : "down";
+  const money = (v, cur) => {
+    if (v == null) return "–";
+    const digits = v < 1 ? 3 : 2;
+    // en-AU spells out US$ vs A$ so mixed-currency holdings read clearly.
+    try { return new Intl.NumberFormat("en-AU", { style: "currency", currency: cur || "USD", minimumFractionDigits: digits, maximumFractionDigits: digits }).format(v); }
+    catch (e) { return v.toFixed(digits); }
+  };
+  const RATING = { strong_buy: "Strong buy", buy: "Buy", hold: "Hold", underperform: "Underperform", sell: "Sell" };
+
+  function renderStocks(d) {
+    const list = d?.stocks || [];
+    $("stocks-empty").hidden = list.length > 0;
+    const at = d?.synced_at ? new Date(d.synced_at) : null;
+    $("stk-meta").textContent = at ? `Delayed · synced ${fmtShort.format(at)}, ${fmtTime.format(at)}` : "Delayed prices";
+    const sparks = [];
+    $("stocks").innerHTML = list.map((x, i) => {
+      const hist = (x.history || []).map((p) => ({ date: p.date, e1rm: p.close }));
+      const sp = hist.length > 1 ? sparkline(hist, i, 520, 70) : null; sparks.push(sp);
+      const a = x.analysts;
+      const earn = x.earnings_date ? `Earnings ${x.earnings_estimate ? "~" : ""}${fmtDM.format(parseDate(x.earnings_date))}` : "";
+      return `<div class="stk">
+        <div class="stk-top">
+          <div class="stk-id"><span class="stk-sym">${esc(x.symbol)}</span><span class="stk-name" title="${esc(x.name)}">${esc(x.name)}${x.exchange ? ` · ${esc(x.exchange)}` : ""}</span></div>
+          <div class="stk-px"><span class="num">${esc(money(x.price, x.currency))}</span><span class="chip ${dir(x.day_pct)}" title="Change vs previous close">${esc(pct(x.day_pct))} today</span></div>
+        </div>
+        ${sp ? `<div class="chart" data-stk="${i}">${sp.svg}</div>` : ""}
+        <div class="stk-meta">
+          <span>1M <b class="${dir(x.m1_pct)}">${esc(pct(x.m1_pct))}</b></span>
+          <span>3M <b class="${dir(x.m3_pct)}">${esc(pct(x.m3_pct))}</b></span>
+          ${a ? `<span title="Analyst range ${esc(money(a.target_low, x.currency))} to ${esc(money(a.target_high, x.currency))}">Analyst target <b>${esc(money(a.target_mean, x.currency))}</b> (${esc(pct(a.upside_pct))}) · ${a.count || "?"} analyst${a.count === 1 ? "" : "s"}${a.rating ? ` · ${esc(RATING[a.rating] || a.rating)}` : ""}</span>` : ""}
+          ${earn ? `<span>${esc(earn)}</span>` : ""}
+        </div>
+      </div>`;
+    }).join("");
+    $("stocks").querySelectorAll(".chart[data-stk]").forEach((box) => {
+      const i = +box.dataset.stk, sp = sparks[i], x = list[i];
+      const svgEl = box.querySelector("svg"), cross = svgEl.querySelector(".cross"), hov = svgEl.querySelector(".hov");
+      svgEl.setAttribute("aria-label", `${x.symbol} price, last 3 months`);
+      svgEl.addEventListener("pointermove", (e) => {
+        const r = svgEl.getBoundingClientRect();
+        const mx = ((e.clientX - r.left) / r.width) * sp.W;
+        let best = 0;
+        sp.pts.forEach(([px], j) => { if (Math.abs(px - mx) < Math.abs(sp.pts[best][0] - mx)) best = j; });
+        const [px, py] = sp.pts[best], p = x.history[best];
+        cross.setAttribute("x1", px); cross.setAttribute("x2", px);
+        hov.setAttribute("cx", px); hov.setAttribute("cy", py);
+        cross.setAttribute("visibility", "visible"); hov.setAttribute("visibility", "visible");
+        showTip(box, (px / sp.W) * r.width, (py / sp.H) * r.height, `${esc(fmtDM.format(parseDate(p.date)))} · <b>${esc(money(p.close, x.currency))}</b>`);
+      });
+      svgEl.addEventListener("pointerleave", () => { hideTip(); cross.setAttribute("visibility", "hidden"); hov.setAttribute("visibility", "hidden"); });
+    });
+  }
+
+  function sparkline(hist, idx, W = 240, H = 64) {
+    const pad = 5;
     const vals = hist.map((p) => p.e1rm);
     let lo = Math.min(...vals), hi = Math.max(...vals);
-    if (hi - lo < 1) { lo -= 2.5; hi += 2.5; }
+    if (hi - lo < hi * 0.02) { const pad = Math.max(hi * 0.02, 0.01); lo -= pad; hi += pad; }
     const t0 = parseDate(hist[0].date).getTime();
     const t1 = Math.max(parseDate(hist[hist.length - 1].date).getTime(), t0 + 864e5);
     const X = (p) => pad + ((parseDate(p.date).getTime() - t0) / (t1 - t0)) * (W - 2 * pad);
@@ -811,6 +890,8 @@ ol.exs > li:first-child { border-top: 0; }
       todos = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
       renderTodos();
     }, (e) => { showTodoErr(e); setTodoControls(false); });
+    db.doc("stocks/summary").onSnapshot((snap) => renderStocks(snap.exists ? snap.data() : null),
+      () => { $("stocks-empty").textContent = "Stock prices couldn't load. Reload to try again."; });
     db.doc("gym/summary").onSnapshot((snap) => renderGym(snap.exists ? snap.data() : null),
       () => { $("gym-empty").innerHTML = `<p class="note">Training data couldn't load. Reload to try again.</p>`; });
   });

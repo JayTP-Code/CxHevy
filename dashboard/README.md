@@ -22,3 +22,10 @@ A Claude routine ("Daily Hevy dashboard sync") runs every day at 22:27 UTC, abou
 an hour after you usually finish training. It runs `scripts/hevy_sync.py` in a fresh cloud
 session and loads the result into the dashboard. It needs `HEVY_API_KEY` set as an
 environment secret and `api.hevyapp.com` allowed in the environment's network access.
+
+## Stocks
+
+`scripts/stocks_sync.py` pulls delayed prices, 3-month history, analyst targets and next earnings
+dates from Yahoo Finance for the watchlist in `config/stocks.json`, and the daily routine loads
+them into the page's `stocks/summary` document. Edit `config/stocks.json` to change the watchlist
+(ASX tickers take a `.AX` suffix).
